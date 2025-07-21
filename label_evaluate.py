@@ -129,9 +129,8 @@ def dia_distribution(annotations):
     dia_list = []
     for i in range(num_objs):
         bw, bh = annotations["objects"][i]["bbox"][2], annotations["objects"][i]["bbox"][3]
-        dia = int((bw+bh)//2)
-        dia_list.append(dia)
-    fig, ax = plt.subplots(1, 1)
+        dia = (bw + bh) / 2
+        dia_list.append(dia)    fig, ax = plt.subplots(1, 1)
     n, bins, patches = ax.hist(dia_list, bins=30, density=True, range = (0, 1200),
                                                                 alpha=0.5, edgecolor='black', label='hist')
 
