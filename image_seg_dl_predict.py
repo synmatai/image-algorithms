@@ -14,7 +14,6 @@ from pytorch_lightning.callbacks import ModelCheckpoint,EarlyStopping
 import argparse
 from PIL import Image
 import glob
-from skimage import io, color
 import tifffile as tif
 from skimage import io, measure, color 
 from albumentations import Compose, LongestMaxSize, PadIfNeeded
@@ -23,6 +22,7 @@ from torchvision import transforms as torchtrans
 import copy
 from collections import Counter
 import itertools
+from scipy.stats import norm, halfnorm
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 #图像分割模型
 class CamVidModel(pl.LightningModule):
@@ -361,23 +361,24 @@ def evaluate(pred, gt, numclasses=3):
             areaImage = pred_id.shape[0]*pred_id.shape[1]
             avg, std, porosity = tds(areas, areaSum, areaImage)
             print(avg, std, porosity)
-            count = Counter(areas)
-            percent_dict= {}
-            for size, cnt in count.items():
-                percent=(size*cnt/areaSum)*100
-                percent_dict[size*px] = percent
-            x_set = list(percent_dict.keys())
-            y_set = list(percent_dict.values())
-            y_set = list(itertools.accumulate(y_set))
-            target_y_set = [10,20,50,80,100]
-            target_x_set = np.interp(target_y_set, y_set, x_set)
+            #pdf and cdf
+            calib_areas = [area*px*px for area in areas]
+            fig, ax = plt.subplots(1, 1)
+            
+            n, bins, patches = ax.hist(calib_areas, bins=30, range=(0,0.6), density=True,
+                                                                alpha=0.3, edgecolor='black', label='hist')
+            
+            paras = halfnorm.fit(calib_areas)
+            ax.plot(bins, halfnorm.pdf(bins, paras[0],paras[1]), linestyle='--', color='b', linewidth=2, label='pdf')
+            ax.set_xlabel('area (μm^2)')
+            ax.set_ylabel('Density')
+            ax.legend()
 
-            plt.plot(x_set, y_set, colors[id-1])
-            plt.plot(target_x_set, target_y_set, 'ro')
-            plt.vlines(target_x_set, 0,  target_y_set, color='red', linestyle='--', lw=0.2)
-            plt.hlines(target_y_set, 0, target_x_set, color='red', linestyle='--', lw=0.2)
-            plt.xlabel('area in μ')
-            plt.ylabel('cumulative undersize percent')
+            ax2 = ax.twinx()
+            ax2.plot(bins, norm.cdf(bins, paras[0], paras[1]), linestyle='--', color='g', linewidth=2, label='cdf')
+            ax2.set_ylabel('Cumulative Density')
+            ax2.legend()
+            plt.title('Size Area Distribution')
             plt.show()
 
     
@@ -427,6 +428,41 @@ def visualize(src, pred):
         cv2.putText(src, str(area), (int(min_rect[0][0]), int(min_rect[0][1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0,0), 1)
         cv2.drawContours(src, contours, k, (255, 0, 0, 255), 1)
     return src
+
+def preprocess(image):
+    if image.shape[2] == 4:  # 检查是否是 RGBA 图像
+        image = image[:, :, :3]
+    trans=get_transform(image.shape[:2])
+    if trans:
+        transformed = trans(image=image)
+        image = transformed['image']
+    image = torchtrans.ToTensor()(image)
+    return image
+
+
+
+def predict_segmentation_mask(image, num_class=3):
+    if image is None:
+        raise ValueError("input can't be empty !")
+    input_ts = preprocess(image)
+    if len(input_ts.shape) == 3:
+        input_ts = input_ts.unsqueeze(0)
+    
+
+    ckpt_path=f"pretrained/best_ckpt-{num_class}.ckpt"
+    model = CamVidModel.load_from_checkpoint(
+        checkpoint_path=ckpt_path,
+        arch="Unet",
+        encoder_name="resnet50",
+        in_channels=3,
+        out_classes=num_class,
+    ).cuda()
+    model.eval()
+    logits = model(input_ts)            
+    labmask = (logits.softmax(dim=1)).argmax(dim=1)
+    res = labmask.cpu().squeeze(0).numpy().astype(np.uint8)
+    return res
+
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
